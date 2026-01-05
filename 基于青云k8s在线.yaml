@@ -1,0 +1,139 @@
+## 1，下载安装工具
+
+- 根据官网文档的无法下载：
+    export KKZONE=cn
+    curl -sfL https://get-kk.kubesphere.io | VERSION=v3.0.13 sh -
+    直接打开链接：https://get-kk.kubesphere.io
+    会自动下载脚本：downloadKubekey.sh
+    根据脚本的下载链接，组合成下图中红框的链接，在能访问git的节点下载文件，上传至集群master节点。
+    ![695d37d0c31c1541897c9d16f86ee1bc.png](695d37d0c31c1541897c9d16f86ee1bc.png)
+- 或者直接访问此链接下载kubekey
+    https://github.com/kubesphere/kubekey
+
+## 2，生成配置文件
+
+- 查看当前kk支持的k8s版本
+    ./kk version --show-supported-k8s
+- 生成配置文件
+    ./kk create config --with-kubernetes v1.26.3 --with-kubesphere v3.4.1
+    后面的参数指定对应的版本，需要提前了解kk每个版本支持的版本矩阵
+
+## 3，编辑配置文件
+
+其中的hosts.name，就是集群安装完成后，每个节点的hostname，安装过程中会自动设置每个节点。
+
+简单安装只需要关注集群节点的基础信息即可
+![2302dbeef18cd45a43ce7074521bb0e4.png](2302dbeef18cd45a43ce7074521bb0e4.png)
+此处修改为docker.io的加速地址
+![b4f5e8df21ad40ff0e105ef040021cd7.png](b4f5e8df21ad40ff0e105ef040021cd7.png)
+或者改为青云官方的阿里镜像仓库
+registry.cn-beijing.aliyuncs.com
+kubesphereio
+![a2789c0ccf46a3ba66f34d110e2cb475.png](a2789c0ccf46a3ba66f34d110e2cb475.png)
+
+autoRenewCerts: true此配置是设置k8s证书自动续期，会创建两个服务
+![d43267c0198349079e663e3b29c81c7b.png](d43267c0198349079e663e3b29c81c7b.png)
+定义服务和定义定时执行，证书小于30天，自动续期。
+![ab960be8f26caba7ff0ba44d62fa374d.png](ab960be8f26caba7ff0ba44d62fa374d.png)
+
+## 4，必需组件安装
+
+需要安装必需组件socat和conntrack
+yum install -y socat conntrack ebtables ipset ipvsadm tar
+
+!!!这里ipvsadm组件必须安装，因为kube-proxy依赖此工具，默认的集群安装配置文件使用的ipvs，如果指定iptables则不需要安装此组件。
+
+## 5，设置时间同步
+
+redhat系列linux系统配置统一的chrony时间服务地址
+![650eb8062f954bfebf3355b2a21b015b.png](650eb8062f954bfebf3355b2a21b015b.png)
+
+## 6，创建集群
+
+KKZONE=cn ./kk create cluster -f config-sample.yaml
+![39795c22d03fc0374966398e7eebbcb9.png](39795c22d03fc0374966398e7eebbcb9.png)
+输入yes开始部署
+
+过程可以看到使用的阿里云镜像仓库
+![5ba36a4fbd5078bcc2f4878e36491e4f.png](5ba36a4fbd5078bcc2f4878e36491e4f.png)
+
+==执行初始化的节点，其/etc/kubernetes/kubeadm-config.yaml文件中包含了初始化的配置信息，其他master节点中无此信息。如果此初始化节点不存在了，不影响集群运行，
+但是在使用kk 工具添加新节点时会去校验此内容，此时使用kubeadm工具添加节点即可，参照k8s文档中添加节点==
+
+### 4.0之后的版本安装k8s后，还需要安装ks-core才会有控制台
+
+完整命令：（访问外网受限，需要添加后面2/3项参数）
+
+```
+helm upgrade --install -n kubesphere-system --create-namespace ks-core https://charts.kubesphere.io/main/ks-core-1.1.3.tgz --debug --wait \
+--set global.imageRegistry=swr.cn-southwest-2.myhuaweicloud.com/ks \
+--set extension.imageRegistry=swr.cn-southwest-2.myhuaweicloud.com/ks \
+--set hostClusterName=host
+```
+
+- hostClusterName： 修改主集群的名字，默认为 host
+- 两个 imageRegistry：修改组件镜像仓库地址
+
+### 卸载kubesphere
+
+helm -n kubesphere-system uninstall ks-core
+
+## 7，添加节点：
+
+一般情况下，master和woker节点一样
+新节点安装必要组件：
+`yum install socat conntrack tar ipvsadm -y`
+生成配置文件（如果之前安装集群的配置文件没有了）：
+`./kk create config --from-cluster`
+将新集群的信息添加到配置文件的hosts 和 roleGroups
+![8869b0aadf0718415991e6a6c6cae909.png](8869b0aadf0718415991e6a6c6cae909.png)
+执行添加集群
+`KKZONE=cn ./kk add nodes -f sample.yaml`
+
+## 8，删除节点
+1，查看当前所有的节点：
+kubectl get node
+2，排空需要删除节点的pod：
+kubectl drain <node name>
+3，基于安装集群的配置文件删除节点
+./kk delete node <node name> -f config-sample.yaml
+
+如果配置文件不存在，使用Kubectl delete node <node name>
+
+# 问题：
+
+==问题1 ：下载helm太慢==
+![1862ef9d303d7bca827a8b1bd5239bcb.png](1862ef9d303d7bca827a8b1bd5239bcb.png)
+解决：如果创建不成功执行下此变量：export KKZONE=cn
+或者直接
+KKZONE=cn ./kk create cluster -f config-sample.yaml
+
+==问题2：节点未安装tar解压工具==
+![95b181ee5165d4b585f4f535bc9a315d.png](95b181ee5165d4b585f4f535bc9a315d.png)
+解决：每个节点安装tar工具
+
+==问题3：安装一直卡在 Please wait for the installation to complete:==
+![865010a0d7b42f189147c7d49588c6e0.png](865010a0d7b42f189147c7d49588c6e0.png)
+此时另外开一个此节点的窗口或者在其他master节点查看安装进度日志：
+`kubectl logs -n kubesphere-system $(kubectl get pod -n kubesphere-system -l 'app in (ks-install, ks-installer)' -o jsonpath='{.items[0].metadata.name}') -f`
+![79d39ebc6718e8a629c17d0355c6e55a.png](79d39ebc6718e8a629c17d0355c6e55a.png)
+查看集群deployment，发现很多失败的
+kubectl get deployment --all-namespaces
+![3faec2f2c9c22e22e74d2cd4759ab8ad.png](3faec2f2c9c22e22e74d2cd4759ab8ad.png)
+查看pod
+kubectl get pod -A
+![729b575a7dba337993ff28da154552c4.png](729b575a7dba337993ff28da154552c4.png)
+查看pod日志
+kubectl logs -f --tail 100 podname
+发现是镜像拉取失败
+
+此时需要修改所有有问题的deployment的镜像地址
+kubectl edit deployment ks-console -n kubesphere-system
+修改完后会自动执行更新
+
+或者直接更改docker或者container的镜像仓库加速地址
+
+etcd快照默认备份路径：
+https://ask.kubesphere.com.cn/forum/d/23898-etcd-bei-fen-huan-yuan-shi-zhan
+
+/var/backups/kube_etcd

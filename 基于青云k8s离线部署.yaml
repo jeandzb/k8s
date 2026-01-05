@@ -1,0 +1,155 @@
+青云k8s离线部署说明
+文件准备：
+1，	kubesphere.tar.gz（K8S环境离线安装全量包）制作方法见官方链接：https://www.kubesphere.io/zh/docs/v3.3/installing-on-linux/introduction/air-gapped-installation
+2，	kk（K8S安装命令）
+3，	config-sample.yaml（K8S安装配置k8s）
+4，	config-harbor.yaml（通过K8S安装harbor）
+5，	docker离线包（离线安装docker）
+6，	create_project_harbor.sh（创建harbor项目）
+7，	docker.service
+
+系统准备：
+至少1+1，即：1台master，1台node；
+推荐：1+3+1，即：1台master，3台node，1台harbor
+系统：centos/rokey linux/alma linux
+
+步骤概要：
+1，	基础系统环境检查
+2，	安装k8s的系统依赖
+3，	安装docker
+4，	安装harbor
+5，	配置harbor项目
+6，	安装集群
+
+基础环境安装准备：
+控制节点和工作节点均需安装
+1，	环境检查
+关闭防火墙：systemctl stop firewalld && systemctl disable firewalld
+
+2，	免密配置
+所有节点执行ssh-keygen -t rsa
+在master节点执行ssh-copy-id node节点IP
+
+3，	K8S系统依赖安装
+系统依赖文件下，根据以下顺序逐个安装
+rpm -ivh libnetfilter_cttimeout-1.0.0-19.el9.x86_64.rpm
+rpm -ivh libnetfilter_conntrack-1.0.8-4.el9.x86_64.rpm
+rpm -ivh ipset-libs-7.11-6.el9.x86_64.rpm
+rpm -ivh ipset-7.11-6.el9.x86_64.rpm
+rpm -ivh libnetfilter_cthelper-1.0.0-22.el9.x86_64.rpm
+rpm -ivh libnetfilter_queue-1.0.5-1.el9.x86_64.rpm
+rpm -ivh ipvsadm-1.31-6.el9.x86_64.rpm
+rpm -ivh conntrack-tools-1.4.5-17.el9.x86_64.rpm
+rpm -ivh socat-1.7.4.1-5.el9.x86_64.rpm
+
+每个安装成功后出现如上图即为成功
+
+4，	docker安装
+在docker文件夹所在目录执行
+开始前，给与docker文件夹下所有文件执行权限
+chmod +x docker/*
+拷贝docker相关文件至/usr/bin
+cp -p docker/* /usr/bin
+拷贝docker服务文件至系统路径
+cp docker.service /usr/lib/systemd/system
+重载配置并加入开机启动
+systemctl daemon-reload && systemctl enable docker
+创建docker配置目录和数据目录
+mkdir /etc/docker && mkdir -p /snt/data/docker
+修改docker数据目录
+vi /etc/docker/daemon.json
+内容如下：
+{
+ "data-root": "/snt/data/docker"
+}
+启动docker
+systemctl start docker
+查看docker信息，确定安装成功
+docker info
+
+本地harbor安装：
+在非master主机上安装，或者最好是集群外的单独服务器来安装。
+修改配置文件config-harbor.yaml，可以添加上所有的节点，会自动分发证书文件到节点
+
+Host：配置master和node的连接信息，privateKeyPath是做了免密登录的配置
+Registry：要安装harbor到那个节点
+
+给kk文件授执行权限
+chmod +x kk
+
+安装：
+./kk init registry -f config-harbor.yaml -a kubesphere.tar.gz
+直接在浏览器访问harbor节点的ip，admin/Harbor12345，能登录即为安装成功。
+
+所有节点添加docker配置文件：
+vi /etc/docker/daemon.json
+添加仓库地址，如下
+{
+ "data-root": "/snt/data/docker",
+ "insecure-registries":["dockerhub.kubekey.local"]
+}
+重新加载配置：systemctl daemon-reload
+
+新建harbor项目
+./create_project_harbor.sh
+
+
+harbor证书文件要拷贝到master，一般会自动在各节点生成。
+/etc/docker/certs.d 此路径的文件同步到所有节点
+
+
+集群安装：
+在Master上安装
+修改配置文件config-sample.yaml
+主要配置如下：
+可以加上harbor节点的信息，会自动添加hosts
+
+
+
+
+开始安装
+./kk create cluster -f config-sample.yaml -a kubesphere.tar.gz --with-packages
+
+环境检查阶段，红框内的依赖环境必须全部安装
+
+查看安装进度：
+1，	kubectl logs -n kubesphere-system $(kubectl get pod -n kubesphere-system -l 'app in (ks-install, ks-installer)' -o jsonpath='{.items[0].metadata.name}') -f
+2，	kubectl logs -n kubesphere-system $(kubectl get pod -n kubesphere-system -l app=ks-install -o jsonpath='{.items[0].metadata.name}') -f
+
+
+卸载集群：
+./kk delete cluster yaml/config-sample.yaml
+
+
+QA汇总：
+
+
+1，安装时报错：
+
+可能是节点安装docker后再关闭的防火墙，重启节点的docker即可
+
+2，metrics_server安装失败
+单node节点安装需注意harbor的4443端口和metrics_server的4443端口会冲突，
+解决办法：
+先安装，在卡到安装metrics_server步骤时停止harbor的4443容器，就可以继续安装
+
+3，卸载集群后再安装集群报错harbor登录不上
+卸载集群后需要重启harbor的容器，或者直接重启docker服务
+
+
+4，报错此文件不存在，是因为制作离线包是基于其他系统做的，如果制作包和安装集群环境的系统不一样的话，需要在master节点报错的目录新建对应路径，并放置报错的文件。其iso文件可以在青云的github上获取
+
+
+5，证书文件和daemon.json文件没有添加仓库地址
+
+
+6，
+Node节点连不上API服务，可以检查主机之间的网关是不是有问题
+
+7，启动kubelet报错unable to load bootstrap kubeconfig: stat /etc/kubernetes/bootstrap-kubelet.conf: no such file or directory"，是kubelet.conf的证书权限有问题
+处理方法：
+在master节点拷贝 admin.conf 到 kubelet.conf ，再重新启动kubelet服务
+cp -a /etc/kubernetes/admin.conf /etc/kubernetes/kubelet.conf
+systemctl daemon-reload  && systemctl restart kubelet
+
+

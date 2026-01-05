@@ -1,0 +1,145 @@
+  1，拉取官方yaml文件
+    
+    ```bash
+    wget https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+    ```
+    
+    可以直接下载文件后上传服务器
+    2，编辑yaml文件，修改image镜像和证书忽略（测试和开发环境）
+    ![53d5c6164862b308c918fe394369ce8a.png](53d5c6164862b308c918fe394369ce8a.png)
+
+  - 因国内无法直接拉取k8s仓库的镜像，需修改为国内的；
+  - 在没有配置证书的情况下，无法验证节点的证书进行通信，启动会报错。 - --kubelet-insecure-tls
+    
+    执行部署：
+    `kubectl apply -f components.yaml`
+    会在任意节点部署pod，过程中如果部署失败，可通过此命令查看日志：metrics默认属于kube-system命名空间，查询时需加上
+    `kubectl logs <pod-name> -n kube-system`
+    部署完成如下：此例修改了部署replicas
+    ![10bb19fc057b813632cdb82137034760.png](10bb19fc057b813632cdb82137034760.png)
+    
+    3，证书配置，此步骤若是测试和开发环境可忽略
+
+  - 默认情况下，kubeadm 所部署的 kubelet 服务证书是自签名（Self-Signed）。 这意味着从 metrics-server 这类外部服务发起向 kubelet 的链接时无法使用 TLS 来完成保护。因此需要在kubelet参数中指定如下两个参数，开启kubelet server证书认证，且证书由集群ca签署
+    cat /var/lib/kubelet/config.yaml
+    tlsCertFile: /var/lib/kubelet/pki/kubelet-server.crt
+    tlsPrivateKeyFile: /var/lib/kubelet/pki/kubelet-server.key
+
+    3.1，生成服务器证书和私钥：注意这一步仅仅是配置metrics的服务证书，并不是上面说的kubelet证书，这个在后面会说到。
+    在任意节点使用openssl生成，详细步骤如下：
+    3.1.1，检查openssl是否安装，一般k8s集群安装完成后，会自动安装openssl和k8s的CA根证书，此CA证书可以用于生成后续的服务器证书和私钥
+    openssl version
+    ![b74e7c091d6ea86ebba5696ef5b435cc.png](b74e7c091d6ea86ebba5696ef5b435cc.png)
+    3.1.2，
+    使用K8s集群的CA证书生成服务器证书和私钥，k8s的CA证书默认位于/etc/kubernetes/pki/
+    在其他目录创建ssl文件夹，将/etc/kubernetes/pki/中的ca.key和ca,crt复制到此文件夹，然后生成服务器私钥文件：
+    `openssl genrsa -out server.key 2048`
+    创建证书签名请求：
+    `openssl req -new -sha256 -key server.key -subj "/CN=kubernetes" -reqexts SAN -config <(cat /etc/pki/tls/openssl.cnf <(printf "\\n[SAN]\\nsubjectAltName=IP:192.168.100.100,IP:192.168.100.101,IP:192.168.100.102,IP:192.168.100.103")) -out server.csr`
+
+  - /etc/pki/tls/openssl.cnf是openssl的默认配置文件
+  - subjectAltName：添加上所有节点的IP（应该可以不，待验证）
+    
+    创建一个包含 CA 证书和私钥的配置文件
+    
+    ```bash
+    cat > extfile.txt << EOF
+    subjectAltName = IP:192.168.100.100,IP:192.168.100.101,IP:192.168.100.102,IP:192.168.100.103
+    extendedKeyUsage = serverAuth
+    EOF
+    ```
+    
+    3.1.3，签发证书
+    `openssl x509 -req -in server.csr -CA /etc/kubernetes/pki/ca.crt -CAkey /etc/kubernetes/pki/ca.key -CAcreateserial -out server.crt -days 3650 -sha256 -extfile extfile.txt`
+
+  - woker节点没有ca.key的话，从master对应节点拷贝过来就行
+  - 注意其中的-days 和- extfile
+    ![42927d5d2a7d9acc3eaa3867c032e048.png](42927d5d2a7d9acc3eaa3867c032e048.png)
+    
+    3.2，将证书和私钥存储到 Kubernetes Secret
+    
+    ```bash
+    kubectl create secret generic metrics-server-tls \
+    --from-file=server.crt=server.crt \
+    --from-file=server.key=server.key \
+    --from-file=ca.crt=ca.crt \
+    -n kube-system
+    ```
+    
+    ![22aac25200801d3dfe7a2450786aa8be.png](22aac25200801d3dfe7a2450786aa8be.png)
+    命令解析：
+
+  - generic 是secret的类型，generic表示用于存储任何类型的敏感数据
+  - metrics-server-tls 是secret名称
+  - \--from-file=server.crt=server.crt ，第一个是secret内部的键名称，此名称随意，不会和其他secret内的此类名称冲突。第二个是server.crt 文件路径，可以是执行命令的当前路径（相对路径），也可以是绝对路径。
+  - \--from-file=ca.crt=ca.crt 添加CA证书，供metrics-server验证kubelet的ca证书时使用
+    
+    3.3，配置metrics使用证书
+    
+    ```
+  - --cert-dir=/certs
+    - --secure-port=443
+    - --tls-cert-file=/certs/server.crt
+    - --tls-private-key-file=/certs/server.key
+    - --kubelet-certificate-authority=/certs/ca.crt
+
+    volumeMounts:
+      - mountPath: /certs
+        name: metrics-server-tls
+    volumes:
+      - secret:
+          secretName: metrics-server-tls
+        name: metrics-server-tls
+    ```
+    
+    删除 - --kubelet-insecure-tls
+    ![a77b4057fc3f4fbd7d6c6fd412255854.png](a77b4057fc3f4fbd7d6c6fd412255854.png)
+    ![e11a240dcda2b18a584e3cfc58b43637.png](e11a240dcda2b18a584e3cfc58b43637.png)
+    
+    4.kubelet证书配置：
+    在前面3步配置完成后，部署metrics会发现日志报错，获取节点的kebelet服务错误，因为kubelet的10250端口是https，但是其证书是自签名，无法供metrics校验。所以要在kubelet参数中指定如下两个参数，开启kubelet server证书认证，且证书由集群ca签署。
+    
+    任意节点，任意目录：
+
+  - 创建kubelet-server.key用于后续生成csr文件：
+    `openssl genrsa -out kubelet-server.key 2048`
+
+  - 生成scr文件（Certificate Signing Request的英文缩写，即证书签名请求文件）
+    `openssl req -new -sha256 -key kubelet-server.key -subj "/CN=kubernetes" -reqexts SAN -config <(cat /etc/pki/tls/openssl.cnf <(printf "\\n[SAN]\\nsubjectAltName=IP:192.168.100.102")) -out kubelet-server.csr`
+
+  - 创建extfile.txt文件证书配置，用于创建证书文件
+    
+    
+    ```bash
+    cat > extfile.txt << EOF
+    subjectAltName = IP:192.168.100.102
+    extendedKeyUsage = serverAuth
+    EOF
+    ```
+
+  - 使用集群CA生成节点kubelet服务端证书文件
+    `openssl x509 -req -in kubelet-server.csr -CA /etc/kubernetes/pki/ca.crt -CAkey /etc/kubernetes/pki/ca.key -CAcreateserial -out kubelet-server.crt -days 3650 -sha256 -extfile extfile.txt`
+
+  - 拷贝证书到kubelet cert dir目录中，一般是/var/lib/kubelet/pki/
+
+  - 修改Kubelet配置文件，加到最后即可
+    
+    
+    ```bash
+    cat >> /var/lib/kubelet/config.yaml << EOF
+  tlsCertFile: /var/lib/kubelet/pki/kubelet-server.crt
+  tlsPrivateKeyFile: /var/lib/kubelet/pki/kubelet-server.key
+    EOF
+    ```
+    
+    若启动kubelet失败，拷贝master的/etc/kubernetes/admin.conf到woker的/etc/kubernetes/kubelet.conf（直接替换内容也可以），再启动
+    
+    ![7ad46d650e86a2340b5bef04e1a2f08e.png](7ad46d650e86a2340b5bef04e1a2f08e.png)
+    ![331667965d81a2ad38cc1b2d20829211.png](331667965d81a2ad38cc1b2d20829211.png)
+    
+    参考链接：
+    最优解：
+    https://www.cnblogs.com/ki11-9/articles/18083565
+    官方：
+    https://www.cnblogs.com/ki11-9/articles/16659943.html
+    https://kubernetes.io/zh-cn/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/
