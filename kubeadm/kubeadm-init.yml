@@ -1,0 +1,45 @@
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  # 【修改】这里填 Master01（初始化节点） 的真实物理 IP
+  advertiseAddress: 192.168.0.221
+  bindPort: 6443
+nodeRegistration:
+  criSocket: unix:///var/run/containerd/containerd.sock
+  imagePullPolicy: IfNotPresent
+  # 【修改】这里填 Master01（初始化节点） 的主机名
+  name: k8s-master-01
+  taints: null # Master 默认会有污点，这里设为 null 不代表不打污点，通常由 kubeadm 默认处理
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+# 【修改】版本改为你要求的 1.33.7
+kubernetesVersion: 1.33.7
+# 【关键】高可用 VIP，所有 Master 和 Worker 都通过这个地址访问 API Server
+controlPlaneEndpoint: "192.168.0.233:6443"
+# 【修改】国内镜像源，解决下载失败问题
+imageRepository: registry.cn-hangzhou.aliyuncs.com/google_containers
+clusterName: kubernetes
+certificatesDir: /etc/kubernetes/pki
+caCertificateValidityPeriod: 87600h0m0s
+certificateValidityPeriod: 8760h0m0s
+networking:
+  dnsDomain: cluster.local
+  serviceSubnet: 10.96.0.0/12
+  # 【修改】必须指定，且不能与宿主机 192.168.0.0/24 冲突
+  podSubnet: 10.244.0.0/16
+etcd:
+  local:
+    dataDir: /var/lib/etcd
+---
+# 【补充】显式配置 kubelet 的 cgroup 驱动为 systemd
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+---
+# 启用ipvs
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+mode: ipvs
+ipvs:
+  strictARP: true
