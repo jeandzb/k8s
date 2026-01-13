@@ -75,6 +75,11 @@ parameters:
   # 默认为 false，即删除 PVC 时不删除 NFS 上的文件 (变为 archived)。
   # 如果想删除 PVC 时同步删除文件，改为 "false"
   archiveOnDelete: "true"
+mountOptions:
+  - nfsvers=4.1       # 建议强制使用 NFS 4.1
+  - noatime           # 禁止更新访问时间，减少 IO
+  - hard              # 硬挂载
+  - local_lock=all    # 【绝对关键】禁用 NFS 网络锁，使用本地锁
 ---
 # 【核心配置：Deployment】
 apiVersion: apps/v1

@@ -63,11 +63,11 @@ modprobe ip_vs && modprobe ip_vs_rr && modprobe ip_vs_wrr && modprobe ip_vs_sh &
 - 查询是否加载成功，否则还是会使用iptables，显示包含筛选的关键字即表示加载成功
 `lsmod | grep -e ip_vs -e nf_conntrack`
 
-安装containerd：
-在此路径下载rpm包 ，注意版本
+## 安装containerd：
+如果离线安装，在此路径下载rpm包 ，注意版本
 docker：https://download.docker.com/linux/rhel/9/x86_64/stable/Packages/
 aliyun：https://mirrors.aliyun.com/docker-ce/linux/centos/9/x86_64/stable/Packages/
-配置阿里云 Docker YUM 仓库
+这里使用在线安装，配置阿里云 Docker YUM 仓库
 ```shell
 cat <<EOF | tee /etc/yum.repos.d/docker-ce.repo
 [docker-ce-stable]
@@ -162,9 +162,11 @@ yum info kubeadm
 
 
 
-## 初始化集群：
+## 初始化集群（master节点执行）：
 生成初始化配置文件
 `kubeadm config print init-defaults > kubeadm-init.yml`
+
+根据示例中的内容，修改相关配置
 
 执行初始化
 `kubeadm init --config=kubeadm-init.yml --upload-certs | tee kubeadm-init.log`
@@ -336,11 +338,117 @@ k8s-worker-01   Ready    <none>          77s     v1.33.7
 至此集群的初步安装已经完成
 --------------------------------------------
 
+## 安装metrics-server
+在github找到最新的安装资源文件：
+https://github.com/kubernetes-sigs/metrics-server
+通常链接如下：
+https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.8.0/components.yaml
+
+需要替换镜像，根据上面的阿里镜像地址和最新的版本号可以组合出来，尝试拉取一下验证是否正确，一般如下：
+registry.aliyuncs.com/google_containers/metrics-server:v0.8.0
+
+根据实际情况，一般推荐InternalIP在前面，按前后顺序的优先级
+spec.template.spec.args:
+--kubelet-preferred-address-types=InternalIP,Hostname,ExternalIP
+
+- 如果不使用TLS，在spec.template.spec.args:添加下面配置，跳过kubelet证书验证
+--kubelet-insecure-tls
+
+- 如果使用TLS，需要配置Kubelet的服务端证书自动轮转
+
+需要修改集群中 所有节点（包括 Master 和 Worker）的 Kubelet 配置
+```shell
+echo "serverTLSBootstrap: true" >> /var/lib/kubelet/config.yaml
+systemctl restart kubelet
+```
+批准证书签名请求 (CSR)
+当 Kubelet 重启并开启 serverTLSBootstrap 后，它会向 K8s API Server 发起一个 CSR 请求，申请一个正式的服务端证书。这个请求默认处于 Pending 状态，需要管理员手动批准
+`kubectl get csr`
+批量批准
+`kubectl get csr | grep Pending | awk '{print $1}' | xargs kubectl certificate approve`
+确认证书已签发 再次查看 CSR，状态应变为 Approved,Issued
+`kubectl get csr`
+
+部署metrics-server
+`kubectl apply -f components.yaml`
+会在kube-system的namespace下创建一个无状态pod：metrics-server-b6d8fb7f7-2rcjl
+查询节点状态：
+kubectl top node
+NAME            CPU(cores)   CPU(%)   MEMORY(bytes)   MEMORY(%)
+k8s-master-01   188m         4%       1107Mi          14%
+k8s-master-02   168m         4%       876Mi           11%
+k8s-master-03   156m         3%       892Mi           11%
+k8s-worker-01   69m          0%       608Mi           1%
+
+
+--------------------------------------------
+## 安装nodelocaldns
+官方资源：
+https://github.com/kubernetes/kubernetes/blob/master/cluster/addons/dns/nodelocaldns/nodelocaldns.yaml
+配置参考：
+https://kubernetes.io/zh-cn/docs/tasks/administer-cluster/nodelocaldns/
+
+修改下面几个参数值：
+__PILLAR__DNS__SERVER__：CoreDNS 的 ClusterIP，NodeLocalDNS 在宿主机上拦截这个 IP 的流量
+` kubectl get -n kube-system svc kube-dns`
+值：CoreDNS 的 ClusterIP
+
+__PILLAR__LOCAL__DNS__：本地监听 IP，NodeLocalDNS 的虚拟网卡 IP，通常固定为此值：169.254.20.10，需要保持此ip未被使用
+固定值：169.254.20.10
+
+__PILLAR__DNS__DOMAIN__：集群域名，除非您修改过 kubelet 配置，否则默认都是这个：cluster.local
+固定值：cluster.local
+
+__PILLAR__CLUSTER__DNS__：上游转发 IP (最关键)，千万不能填 CoreDNS IP！ 必须填 kube-dns-upstream 的 IP，否则会死循环。
+值：这个需要kube-dns-upstream的service创建完成后才能获取:kube-dns-upstream 的 ClusterIP
+`kubectl get svc -n kube-system kube-dns-upstream`
+
+__PILLAR__UPSTREAM__SERVERS__：外部上游 DNS，即填/etc/resolv.conf路径即可
+值：/etc/resolv.conf
+
+执行部署：
+`kubectl apply -f nodelocaldns.yaml`
+查询结果：
+`kubectl get pods -n kube-system -l k8s-app=node-local-dns`
+NAME                   READY   STATUS    RESTARTS   AGE
+node-local-dns-5bwwk   1/1     Running   0          101s
+node-local-dns-6n5n6   1/1     Running   0          100s
+node-local-dns-lwpbx   1/1     Running   0          101s
+node-local-dns-nxs8n   1/1     Running   0          101s
+
+查询kube-dns-upstream的ClusterIP
+`kubectl get svc -n kube-system kube-dns-upstream`
+
+修改PILLAR__DNS__DOMAIN的值
+删除重建
+`kubectl delete pod -n kube-system -l k8s-app=node-local-dns`
+
+有一个名为 nodelocaldns 的虚拟网卡，IP 地址为 169.254.20.10 和 10.96.0.10
+`ip addr show nodelocaldns`
+10: nodelocaldns: <BROADCAST,NOARP> mtu 1500 qdisc noop state DOWN group default
+link/ether 2a:6c:05:64:9f:f8 brd ff:ff:ff:ff:ff:ff
+inet 169.254.20.10/32 scope global nodelocaldns
+valid_lft forever preferred_lft forever
+inet 10.96.0.10/32 scope global nodelocaldns
+valid_lft forever preferred_lft forever
+
+在安装完成之后，一定要记得修改集群新的dns地址为169.254.20.10：
+`kubectl -n kube-system edit configmap kubelet-config`
+```yaml
+clusterDNS:
+- 169.254.20.10
+```
+然后新创建的pod才会使用这个地址作为集群地址解析，如果在pod内查询/etc/reslov.conf,nameserver是10.96.0.10，pod无法访问其他集群内其他pod。
+
+--------------------------------------------
+
 ## 安装nfs storage class
-
+如果集群使用此存储介质，所有节点都需要安装nfs服务
+# 这一步所有节点执行
+```shell
 yum install -y nfs-utils
-
 systemctl enable nfs-server  && systemctl start nfs-server
+```
 
 使用通用配置资源安装：
 
