@@ -432,7 +432,9 @@ valid_lft forever preferred_lft forever
 inet 10.96.0.10/32 scope global nodelocaldns
 valid_lft forever preferred_lft forever
 
-在安装完成之后，一定要记得修改集群新的dns地址为169.254.20.10：
+## 优化：
+在安装完成之后，通过修改集群新的dns地址为169.254.20.10，可以提升网络请求效率，不通过crodns，直接去nodelocaldns
+修改此项后，在创建新pod时会自动将/etc/resolv.conf的nameserver改为169.254.20.10
 `kubectl -n kube-system edit configmap kubelet-config`
 ```yaml
 clusterDNS:
