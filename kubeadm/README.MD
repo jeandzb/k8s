@@ -35,11 +35,17 @@ EOF
 ```
 重启chronyd：
 `systemctl restart chronyd`
-如果没有此配置文件，需要安装
-  ```shell
-dnf install chrony -y
-systemctl enable --now chronyd && systemctl restart chronyd
-  ```
+
+[//]: # (如果没有此配置文件，需要安装)
+
+[//]: # (  ```shell)
+
+[//]: # (dnf install chrony -y)
+
+[//]: # (systemctl enable --now chronyd && systemctl restart chronyd)
+
+[//]: # (  ```)
+
 配置ipvs:
 - K8S默认使用iptables，IPVS有更高级和丰富的功能，此步骤根据实际需求执行
 安装IPVS
@@ -83,7 +89,7 @@ EOF
 安装最新版或指定版本：
 `dnf install -y containerd.io`
 or
-`dnf install -y containerd.io-1.7.13`
+`dnf install -y containerd.io-2.2.1`
 添加开机启动并启动containerd服务
 `systemctl enable containerd && systemctl start containerd && systemctl status containerd`
 
