@@ -91,7 +91,7 @@ EOF
 or
 `dnf install -y containerd.io-2.2.1`
 添加开机启动并启动containerd服务
-`systemctl enable containerd && systemctl start containerd && systemctl status containerd`
+`systemctl enable containerd && systemctl start containerd`
 
 配置containerd：
 - 修改containerd的配置，因为containerd默认从k8s官网拉取镜像
@@ -132,7 +132,7 @@ dnf clean all && dnf makecache
 默认会安装https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.33/rpm/下的最新版本，如果要指定，需要根据此链接下的指定文件名
 `dnf install -y kubelet kubeadm kubectl --disableexcludes=kubernetes`
 如果未指定版本号，安装完后，记得看下默认安装的版本号
-
+`dnf install -y kubelet-1.33.7 kubeadm-1.33.7 kubectl-1.33.7 --disableexcludes=kubernetes`
 设置kubectl开机启动
 `systemctl enable kubelet`
 
@@ -331,6 +331,10 @@ sudo chown $(id -u):$(id -g) $HOME/.kube/config
 ## worker节点加入集群
 Worker 节点的加入命令不需要 --control-plane 和 --certificate-key 参数。
 直接复用上面的命令，去掉那两个参数即可。
+如果忘记了初始化的参数，重新生成：
+'kubeadm token create --print-join-command'
+
+加入集群：
 kubeadm join 192.168.0.233:6443 --token nsvmni.pg7dpzia64vumwev --discovery-token-ca-cert-hash sha256:9ff4d009842407fddabc7800388e2cc8d82176dd0cf3ff8dcf5a1499c0ff3992
 
 再次检查集群状态：
